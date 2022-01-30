@@ -1,0 +1,696 @@
+---
+title: |
+    | Panek / TGF
+author: |
+    | **Internal report**
+    | by Konrad Stawiski, M.D. (konrad@konsta.com.pl; https://konsta.com.pl)
+date: |
+    | Department of Biostatistics and Translational Medicine
+    | Medical University of Lodz, Poland
+    | Mazowiecka 15, 92-215 Lodz
+    | tel: +48 42 272 53 85, www: http://biostat.umed.pl
+output:
+  
+  
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    number_sections: true
+  word_document:
+    df_print: kable
+    highlight: tango 
+    fig_caption: true
+    fig_width: 10
+    fig_height: 10
+  pdf_document:
+    toc: true
+    tBiooc_depth: 4
+    number_sections: true
+    df_print: kable
+    fig_width: 10
+    highlight: tango 
+    fig_height: 6
+    latex_engine: xelatex
+  sansfont: Calibri Light
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(1)
+library(doParallel)
+cl <- makePSOCKcluster(30)
+registerDoParallel(cl)
+setwd("~/2019_Panek_TGF")
+library(knitr)
+library(rmarkdown)
+library(kableExtra)
+```
+
+# Introduction
+
+Let's start with loading the data and creating merged dataset.
+
+```{r echo=TRUE}
+library(xlsx)
+org_dane = read.xlsx("Dane/TABELA PANEK CENTRALNA.xlsx", sheetIndex = 1, stringsAsFactors = F)
+org_snp1 = read.xlsx("Dane/Wyniki genotypowania SNP_1.xlsx", sheetIndex = 1, stringsAsFactors = F)
+temp = org_snp1[1,]
+colnames(org_snp1) = temp
+org_snp1 = org_snp1[-1,]
+org_snp2 = read.xlsx("Dane/Wyniki genotypowania SNP_2.xls", sheetIndex = 1, stringsAsFactors = F)
+
+
+library(dplyr)
+library(rowr)
+# One-time processing:
+#dane = data.frame(org_dane$No.................próbówki)
+#colnames(dane) = "SampleID"
+#dane = cbind(dane, org_snp1[match(dane$SampleID, org_snp1$`Nr róbki`),])
+#dane = dane[,-which(colnames(dane) == "Nr róbki")]
+#dane = cbind.fill(dane, org_snp2[match(dane$SampleID, org_snp2$No..of.samples),])
+#dane = dane[,-which(colnames(dane) == "No..of.samples")]
+#dane = dane[,-which(colnames(dane) == "SAMPLE_NAME")]
+#dane = dane[,-which(colnames(dane) == "WELL")]
+#colnames(dane)
+#rownames(dane) = as.character(dane$SampleID)
+#write.csv(dane,"Dane/temp1.csv")
+dane = read.csv("Dane/snp.csv")
+clinical = org_dane[!duplicated(dane$SampleID),]
+dane = dane[!duplicated(dane$SampleID),]
+
+rownames(dane) = dane$SampleID
+dane = dane[,-which(colnames(dane) == "X")]
+dane = dane[,-which(colnames(dane) == "SampleID")]
+saveRDS(dane,"Dane/dane (przed rm NA).RDS")
+
+ilebrakow = apply(dane, 1, function(x) sum(is.na(x)))
+
+# Remove cases with NA
+print(which(ilebrakow == 20))
+dane = dane[-which(ilebrakow == 20),]
+clinical = clinical[-which(ilebrakow == 20),]
+
+ilebrakow = apply(dane, 1, function(x) sum(is.na(x)))
+
+#After filtering of cases not processed, let's see missing data
+ftable(ilebrakow)
+
+# How much % of data is missing?
+sum(is.na(dane)) / (sum(is.na(dane)) + sum(!is.na(dane)))
+
+# Wich SNPs are missing
+temp = sapply(dane, function(x) sum(is.na(x))) 
+print(temp)
+```
+
+Let's remember that `dane` is the original file. Next we create `dane_complete` which has imputed SNPs to facilitate the analysis.
+
+```{r}
+library(mice)
+temp = mice(dane, m=1)
+dane_complete = complete(temp)
+```
+
+
+# Details about SNPs
+
+```{r}
+library(rsnps)
+snps <- colnames(dane_complete)
+snpinfo = ncbi_snp_summary(snps)
+kable(snpinfo, "html") %>%
+    kable_styling() %>%
+    scroll_box(width = "100%", height = "400px")
+```
+
+# Clinical associations
+
+```{r}
+clinical_ill = ifelse(clinical$Zdrowi...0...Chorzy...1. == 1, "Ill", "Healthy")
+astma1 = ifelse(clinical$Astma.nieciężka..1.2....0................Astma.ciężka..3.4....1.......wg.GINA == 1, "Ciężka", "Nieciężka")
+astma2 = as.factor(clinical$Zdrowi...0...........................Astma.łagodna...1...umiarkowana...2..steroidowrażliwa...3..steroidooporna...4.......wg.GINA)
+levels(astma2) = c("0 Zdrowi", "1 Łagodna", "2 Umiarkowana", "3 Steroidowrazliwa", "4 Steroidoporna")
+astma3 = as.factor(clinical$Astma.ciężka.oporna.na.leczenie.wg.ATS.nie...0..tak...1.)
+levels(astma3) = c("0 Wrazliwa","1 Ciężka oporna na leczenie wg ATS")
+astma4 = as.factor(clinical$Astma.trudna.........nie...0..tak..1.)
+levels(astma4) = c("0 Nie","1 Trudna")
+sex = as.factor(clinical$Płeć...................kobieta...0..mężczyzna...1.)
+levels(sex) = c("Female","Male")
+height = clinical$Wzrost..m.
+height[which(height>100)] = height[which(height>100)]/100
+height[which(height==0)] = NA
+weight = clinical$Waga......kg.
+bmi = clinical$BMI
+age = clinical$Wiek........w.latach.
+allergy = as.factor(clinical$Alergia.........brak...0..sezonowa.1..całoroczna.2..1...2...3.)
+levels(allergy) = c("0 None", "1 Sezonowa", "2 Całoroczna", "3 Obie")
+age_of_diagnosis = as.factor(clinical$Choruje.na.astmę.................3.r.ż....1..................3.7.r.ż...2.................7.16.r.ż....3............16.40.r.ż....4......................40.r.ż....5.)
+levels(age_of_diagnosis) = c("Healthy", "<3", "3-7", "7-16", "16-40", ">40")
+no_allergens = clinical$Liczba.alergenów..brak...0..liczba
+asthma_control = as.factor(clinical$Poziom.Kontroli.Astmy.wg.GINA..niekontrolowana....0..częściowo.kontrolowana....1..kontrolowana...2.)
+levels(asthma_control) = c("Niekontrolowana", "Częściowo kontrolowana", "Kontrolowana")
+systemic_steroids = as.factor(clinical$Systemowe.GKS.przewlekle.w.ostanich.3.miesiącach...............nie...0..tak...1.)
+levels(systemic_steroids) = c("No","Yes")
+inh_steroids = as.factor(clinical$Wziewne.GKS.......nie.przyjmuje...0......tak...1000.µg...1..tak...1000.µg...2.)
+levels(inh_steroids) = c("No","<=1000 mcg", ">1000 mcg")
+
+clin = data.frame(clinical_ill, age, astma1, astma2, astma3, astma4, sex, height, weight, bmi, allergy, age_of_diagnosis)
+full = cbind(dane_complete,clin)
+
+astma1
+
+
+library(ggplot2)
+library(scales)
+barplot(prop.table(table(clinical_ill)))
+barplot(prop.table(table(clin$astma1)))
+barplot(prop.table(table(clin$astma1)))
+barplot(prop.table(table(clin$astma2)))
+barplot(prop.table(table(clin$astma3)))
+barplot(prop.table(table(clin$astma4)))
+barplot(prop.table(table(clin$sex)))
+barplot(prop.table(table(clin$allergy)),main="Allergy")
+barplot(prop.table(table(clin$age_of_diagnosis)),main="Age of diagnosis")
+hist(clin$height)
+cat("Height:")
+summary(height)
+shapiro.test(height)
+cat("Age:")
+hist(clin$age)
+summary(clin$age)
+shapiro.test(clin$age)
+cat("Weight:")
+hist(weight)
+summary(weight)
+shapiro.test(weight)
+
+chorzy.snp = dane_complete[clinical_ill == "Ill",]
+zdrowi.snp = dane_complete[clinical_ill == "Healthy",]
+chorzy.clin = clin[clinical_ill == "Ill",]
+zdrowi.clin = clin[clinical_ill == "Healthy",]
+```
+
+## Between groups
+
+Age:
+```{r}
+library(pastecs)
+library(psych)
+
+describe(clin[,c(2,8,9,10)])
+
+describeBy(clin$age, clin$clinical_ill)
+boxplot(clin$age ~ clin$clinical_ill)
+t.test(clin$age ~ clin$clinical_ill)
+```
+
+Height:
+```{r}
+describeBy(clin$height, clin$clinical_ill)
+boxplot(clin$height ~ clin$clinical_ill)
+t.test(clin$height ~ clin$clinical_ill)
+```
+
+Weight:
+```{r}
+print(describeBy(clin$weight, clin$clinical_ill))
+boxplot(clin$weight ~ clin$clinical_ill)
+t.test(clin$weight ~ clin$clinical_ill)
+```
+
+Sex:
+```{r}
+kable(table(clin$clinical_ill, clin$sex))
+chisq.test(clin$clinical_ill, clin$sex)
+```
+
+Allergy:
+```{r}
+kable(table(clin$clinical_ill, clin$allergy))
+chisq.test(clin$clinical_ill, clin$allergy)
+```
+
+## In asthma group
+Astma ciężka vs. nieciężka:
+
+```{r}
+print(describeBy(chorzy.clin$age, chorzy.clin$astma1))
+boxplot(chorzy.clin$age, chorzy.clin$astma1)
+t.test(clin$age ~ clin$clinical_ill)
+```
+
+
+```{r}
+kable(table(chorzy.clin$age_of_diagnosis, chorzy.clin$astma1))
+chisq.test(chorzy.clin$age_of_diagnosis, chorzy.clin$astma1, correct = T)
+```
+
+```{r}
+kable(table(chorzy.clin$sex, chorzy.clin$astma1))
+chisq.test(chorzy.clin$sex, chorzy.clin$astma1)
+```
+
+```{r}
+kable(table(chorzy.clin$allergy, chorzy.clin$astma1))
+chisq.test(chorzy.clin$allergy, chorzy.clin$astma1)
+```
+
+```{r}
+boxplot(chorzy.clin$weight ~ chorzy.clin$astma1)
+t.test(chorzy.clin$weight ~ chorzy.clin$astma1)
+```
+
+```{r}
+boxplot(chorzy.clin$height ~ chorzy.clin$astma1)
+t.test(chorzy.clin$height ~ chorzy.clin$astma1)
+```
+
+```{r}
+boxplot(chorzy.clin$age ~ chorzy.clin$astma1)
+t.test(chorzy.clin$age ~ chorzy.clin$astma1)
+```
+
+# Allel and genotype description
+
+Let's check if SNPs hold Hardy-Weinberg equilibrium using the Chi-Square method. 
+
+```{r, results='asis'}
+library(genetics)
+library(stringi)
+backup = dane_complete
+par(mfrow=c(1,2))
+
+for(i in 1:length(colnames(dane_complete))) {
+  temp = as.character(dane_complete[,i])
+  for (ii in 1:length(temp)) {
+    if (stri_length(temp[ii]) == 1) { temp[ii] = paste0(temp[ii],"/",temp[ii]) }
+    if (stri_length(temp[ii]) == 2) { temp[ii] = paste0(substr(temp[ii],1,1),"/",substr(temp[ii],2,2)) }
+  }
+  dane_complete[,i] = temp
+  
+  cat(paste0("## ",colnames(dane_complete)[i]))
+  g  <- genotype(temp)
+  cat("\n\n```\n")
+  # Summary
+  print(summary(g))
+  # Disequlibrium
+  print(diseq(g))
+  # Test the null hypothesis that Hardy-Weinberg equilibrium holds using the Chi-Square method.
+  temp2 = HWE.chisq(g)
+  print(temp2)
+  cat("\n```\n")
+  plot(g)
+  plot(g, type="allele")
+  cat("\n\n")
+}
+
+dane_complete_genetics = makeGenotypes(dane_complete)
+```
+
+# Linkage disequilibrium
+
+Linkage disequilibrium (LD) is the non-random association of marker alleles and can arise from marker proximity or from selection bias. LD is a concept of statistical correlation between alleles segregating at two or more loci.2 Conversely, linkage equilibrium refers to the state where the alleles at a particular locus are independently distributed with respect to the alleles at an alternative locus. 
+
+```{r}
+temp = LD(dane_complete_genetics)
+saveRDS(temp,"Wyniki/LD.RDS")
+```
+
+P-values:
+```{r}
+kable(temp$`P-value`, "html") %>%
+    kable_styling() %>%
+    scroll_box(width = "100%", height = "400px")
+```
+
+R-squared:
+```{r}
+kable(temp$`R^2`, "html") %>%
+    kable_styling() %>%
+    scroll_box(width = "100%", height = "400px")
+```
+
+# Ill vs. healthy
+
+## Univariate analysis
+
+We perform logistic regression including a particular SNP (G) and a set of covariates (X) that could include environmental covariates or/and other genetic variables. Included are three analysis options: (i) Unconstrained maximum-likelihood: (UML) This method is equivalent to prospective logistic regression analysis and corresponds to maximum-likelihood analysis of case-control data allowing the joint distribution of all the factors (the SNP of interest and all other covariates) of the model to be completely unrestricted (non-parametric) (ii) Constrained maximum-likelihood: This method performs maximum-likelihood analysis of case-control data under the assumption of HWE and indepenence between the SNP and other factors of the model.The analysis allows the assumptions of HWE and independence to be valid only conditional on certain stratification variables (S), such as self reported ethnicity or principal compoenets of population stratification. (iii) Empirical-Bayes: This method uses an empirical-Bayes type "shrinkage estimation" technique to trade-off bias and variance between the constrained and unconstrained maximum-likelihood estimators.
+
+```{r, results="asis"}
+library(CGEN)
+clinical_ill = as.numeric(ifelse(clinical$Zdrowi...0...Chorzy...1. == 1, 1, 0)) # Astma - 1, Healthy - 0
+temp_gen = dane_complete_genetics
+for(i in 1:length(colnames(temp_gen))) {
+  temp_gen[,i] = as.numeric(temp_gen[,i]) - 1 # bo wymaga 0-1-2
+}
+temp = cbind(clinical_ill, temp_gen)
+temp = temp[complete.cases(temp),]
+
+wyniki = data.frame(SNP = vector(), OR = vector(), Lower = vector(), Upper = vector(), P = vector())
+
+for (i in 1:length(colnames(temp_gen))) {
+  temp2 = CGEN::snp.logistic(temp, "clinical_ill",colnames(temp_gen)[i])
+  cat("\n\n```")
+  print(CGEN::getSummary(temp2))
+  cat("```\n\n")
+  #OR:
+  OR = exp(summary(temp2)$UML[2,1])
+  Lower = exp(summary(temp2)$UML[2,1] - 1.96*summary(temp2)$UML[2,2])
+  Upper = exp(summary(temp2)$UML[2,1] + 1.96*summary(temp2)$UML[2,2])
+  P = summary(temp2)$UML[2,4]
+  
+  cat(paste0("\n\nFor ",colnames(temp_gen)[i], ": OR=", OR, ", 95%CI: ",Lower, "-", Upper, " (p=", P, ")\n\n" ))
+  wyniki[i,] = c(colnames(temp_gen)[i], OR, Lower, Upper, P)
+}
+```
+
+Univariate analysis with prospective univariate logistic regression analysis:
+```{r}
+kable(wyniki, "html") %>%
+    kable_styling() %>%
+    scroll_box(width = "100%", height = "400px")
+```
+
+## Importance
+
+The importance of features can be estimated from data by building a model. Some methods like decision trees have a built in mechanism to report on variable importance. For other algorithms, the importance can be estimated using a ROC curve analysis conducted for each attribute. Here we use  Learning Vector Quantization (LVQ) model in leave-one-out cross-validation to estimate the importance of SNPs.
+
+```{r}
+#clinical_ill = as.factor(ifelse(clinical$Zdrowi...0...Chorzy...1. == 1, "1Asthma", "0Healthy")) # Astma - 1, Healthy - 0
+#temp_gen = dane_complete_genetics
+#temp = cbind(clinical_ill,temp_gen)
+#temp = temp[complete.cases(temp),]
+clinical_ill = as.factor(ifelse(clinical$Zdrowi...0...Chorzy...1. == 1, 1, 0)) # Astma - 1, Healthy - 0
+temp_gen = dane_complete_genetics
+for(i in 1:length(colnames(temp_gen))) {
+  temp_gen[,i] = as.numeric(temp_gen[,i]) - 1 # bo wymaga 0-1-2
+}
+temp = cbind(clinical_ill, temp_gen)
+temp = temp[complete.cases(temp),]
+
+
+library(caret)
+control <- trainControl(method="loocv")
+# train the model
+model <- train(clinical_ill~., data=temp, method="lvq", trControl=control)
+
+# estimate variable importance
+importance <- varImp(model, scale=FALSE)
+# summarize importance
+print(importance)
+# plot importance
+plot(importance)
+```
+
+## Multivariate analysis
+
+Logistic regression, most frequent genotype used as reference:
+
+```{r}
+dane_complete_genetics_factors <- dane_complete_genetics
+dane_complete_genetics_numbers <- dane_complete_genetics
+for (i in 1:ncol(dane_complete_genetics)) {
+  dane_complete_genetics_factors[,i] = as.factor(dane_complete_genetics[,i])
+  temp2 = summary(dane_complete_genetics[,i])
+  najcz = rownames(temp2$genotype.freq)[1]
+  sr = rownames(temp2$genotype.freq)[2]
+  najrz = rownames(temp2$genotype.freq)[3]
+  dane_complete_genetics_factors[,i] = as.character(dane_complete_genetics_factors[,i])
+  dane_complete_genetics_factors[,i] = factor(dane_complete_genetics_factors[,i], c(najcz,sr,najrz))
+
+  dane_complete_genetics_numbers[,i] = as.numeric(dane_complete_genetics_factors[,i])-1
+}
+
+
+library(epiDisplay)
+temp = cbind(clin$clinical_ill, dane_complete_genetics_factors)
+temp2 = cbind(clin$clinical_ill, dane_complete_genetics_numbers)
+colnames(temp)[1] = "status"
+colnames(temp2)[1] = "status"
+glm1 <- glm(status~., 
+            family=binomial, data=temp)
+print(logistic.display(glm1))
+lroc(glm1)
+```
+
+### Backward stepwise selection
+
+```{r}
+glm2 = step(glm1)
+print(logistic.display(glm2))
+lroc(glm2)
+```
+
+### As numbers
+
+```{r}
+glm3 <- glm(status~., 
+            family=binomial, data=temp2)
+print(logistic.display(glm3))
+lroc(glm3)
+```
+
+Backword stepwise:
+```{r}
+
+glm4 = step(glm3)
+logistic.display(glm4)
+lroc(glm4)
+
+```
+
+## Univariate - classical approach
+
+Just simple univariate logistic regression:
+
+```{r}
+#temp = cbind(chorzy.clin$astma1, dane_complete_genetics_factors[clin$clinical_ill == "Ill",])
+colnames(temp)[1] = "status"
+#temp$status = ifelse(temp$status=="Ciężka","Severe","Mild")
+#temp$status = as.factor(temp$status)
+for (i in 2:length(colnames(temp))) {
+  cat(paste0("\n\n\nFor ",colnames(temp)[i], ":\n"))
+  temp2 = glm(temp$status~temp[,colnames(temp)[i]], family = "binomial")
+  print(logistic.display(temp2))
+  cat(paste0("\nReference: ",levels(temp[,colnames(temp)[i]])[1]))
+}
+```
+
+## Diagnostic model
+
+
+```{r}
+library(caret)
+
+# define training control
+train_control <- trainControl(method="LOOCV")
+# train the model
+temp3 = temp[complete.cases(temp),]
+a <- createDataPartition(temp3$status, p = 0.8, list=FALSE)
+training <- temp3[a,]
+test <- temp3[-a,]
+model <- train(status~., data=training, trControl=train_control, method="svmLinearWeights2")
+# summarize results
+#plot(model$finalModel)
+cat("TRAINING ----")
+confusionMatrix(predict(model), training$status)
+cat("TEST ------")
+confusionMatrix(predict(model, newdata = test), test$status)
+saveRDS(model, "model2.RDS")
+```
+
+# Severity
+
+## Univariate
+
+```{r}
+temp = cbind(chorzy.clin$astma1, dane_complete_genetics_factors[clin$clinical_ill == "Ill",])
+colnames(temp)[1] = "status"
+temp2 = cbind(chorzy.clin$astma1, dane_complete_genetics_numbers[clin$clinical_ill == "Ill",])
+colnames(temp2)[1] = "status"
+temp$status = ifelse(temp$status=="Ciężka","Severe","Mild")
+temp$status = as.factor(temp$status)
+for (i in 2:length(colnames(temp))) {
+  cat(paste0("\n\n\nFor ",colnames(temp)[i], ":\n"))
+  temp2 = glm(temp$status~temp[,colnames(temp)[i]], family = "binomial")
+  print(logistic.display(temp2))
+  cat(paste0("\nReference: ",levels(temp[,colnames(temp)[i]])[1]))
+}
+```
+
+## Multivariate
+
+```{r}
+glm1 <- glm(status~., 
+            family=binomial, data=temp)
+print(logistic.display(glm1))
+lroc(glm1)
+```
+
+### Backward stepwise selection
+
+```{r}
+glm2 = step(glm1)
+print(logistic.display(glm2))
+lroc(glm2)
+```
+
+### As numbers
+
+```{r}
+temp2 = cbind(chorzy.clin$astma1, dane_complete_genetics_numbers[clin$clinical_ill == "Ill",])
+colnames(temp2)[1] = "status"
+glm3 <- glm(status~., 
+            family=binomial, data=temp2)
+print(logistic.display(glm3))
+lroc(glm3)
+```
+
+Backword stepwise:
+```{r}
+
+glm4 = step(glm3)
+print(logistic.display(glm4))
+lroc(glm4)
+
+```
+
+
+## Diagnostic model
+
+
+```{r}
+library(caret)
+
+# define training control
+train_control <- trainControl(method="LOOCV")
+# train the model
+temp3 = temp[complete.cases(temp),]
+a <- createDataPartition(temp3$status, p = 0.8, list=FALSE)
+training <- temp3[a,]
+test <- temp3[-a,]
+model <- train(status~., data=training, trControl=train_control, method="svmLinearWeights2")
+# summarize results
+#plot(model$finalModel)
+cat("\nTRAINING ----")
+confusionMatrix(predict(model), training$status)
+cat("\nTEST ------")
+confusionMatrix(predict(model, newdata = test), test$status)
+saveRDS(model, "model2.RDS")
+```
+
+## GINA-based
+
+Ordinal regression (ordinalNet).
+
+```{r}
+library(caret)
+temp = cbind(chorzy.clin$astma2, dane_complete_genetics_factors[clin$clinical_ill == "Ill",])
+colnames(temp)[1] = "status"
+
+
+# define training control
+train_control <- trainControl(method="cv", number=10)
+# train the model
+temp3 = temp[complete.cases(temp),]
+a <- createDataPartition(temp3$status, p = 0.8, list=FALSE)
+training <- temp3[a,]
+test <- temp3[-a,]
+model <- train(status~., data=training, trControl=train_control, method="polr")
+# summarize results
+#plot(model$finalModel)
+cat("\nTRAINING ----")
+confusionMatrix(predict(model), training$status)
+cat("\nTEST ------")
+confusionMatrix(predict(model, newdata = test), test$status)
+saveRDS(model, "model3.RDS")
+```
+
+# Carrier approach
+
+```{r}
+carriers = dane_complete_genetics
+
+for(i in 1:ncol(dane_complete_genetics)) {
+  temp = summary(dane_complete_genetics[,i])
+  carriers[,i] = ifelse(dane_complete_genetics[,i] == rownames(temp$genotype.freq)[1],"0 No","1 Yes")
+}
+```
+
+# CFS-based model
+
+```{r}
+dmdane = read.csv("severity_cfs.arff.csv")
+train_control <- trainControl(method="cv", number=10)
+# train the model
+a <- createDataPartition(dmdane$astma1, p = 0.8, list=FALSE)
+training <- dmdane[a,]
+test <- dmdane[-a,]
+
+glm5 <- glm(astma1~., 
+            family=binomial, data=training)
+print(logistic.display(glm5))
+lroc(glm5)
+
+cat("\nTRAINING ----")
+confusionMatrix(as.factor(ifelse(predict(glm5, type="response")>0.5,"Severe","Mild")), training$astma1)
+cat("\nTEST ------")
+confusionMatrix(as.factor(ifelse(predict(glm5, type="response", newdata=test)>0.5,"Severe","Mild")), test$astma1)
+saveRDS(glm5, "glm5.RDS")
+
+
+model <- train(astma1~., data=training, trControl=train_control, method="C5.0")
+# summarize results
+#plot(model$finalModel)
+cat("\nTRAINING ----")
+confusionMatrix(predict(model), training$astma1)
+cat("\nTEST ------")
+confusionMatrix(predict(model, newdata = test), test$astma1)
+saveRDS(model, "model3.RDS")
+```
+
+
+# Meta
+
+```{r}
+meta = ifelse(doeksportu$clinical_ill == "Healthy","Healthy",ifelse(doeksportu$astma1 == "Nieciężka","Mild Asthma","Severe Asthma"))
+backup = doeksportu
+
+doeksportu$FEV1 = clinical$FEV1...........wn
+doeksportu$FVC = clinical$FVC................wn
+doeksportu$FEV1doFVC = clinical$FEV1.FVC..............wn
+doeksportu$TestKontroli = clinical$Test.kontroli.astmy..ATC..wynik.surowy.w.pkt
+doeksportu$LiczbaZaost = ifelse(clinical$Występowanie.licznych..2.i.więcej.w.ciągu.roku..ciężkich.zaostrzeń.astmy.mimo.stosowana.wysokich.dawek.wGKS.plus.LABA.................nie...0...........tak...1. == 1, "1 Tak", "0 Nie")
+doeksportu$LiczbaPaczkolat = clinical$Liczba.paczkolat...Paczkolata...liczba.paczek.papierosów.dziennie.x.lata.palenia...0...nie.pali
+
+
+metadb = dplyr::select(doeksportu, -clinical_ill, -astma1, -astma2, -astma3, -astma4)
+write.csv(metadb, "metadb.csv")
+glm3 <- glm(meta~., 
+            family=binomial, data=metadb)
+print(logistic.display(glm3))
+lroc(glm3)
+
+glm4 = step(glm3)
+print(logistic.display(glm4))
+lroc(glm4)
+
+write.csv(metadb, "metadb.csv")
+```
+
+# Testy
+
+```{r}
+
+```
+
+
+# Footer
+
+```{r}
+sessionInfo()
+```
+
+By Konrad Stawiski (konrad@konsta.com.pl).
